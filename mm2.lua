@@ -1,5 +1,5 @@
 --// MM2 Mobile AimBot + FOV Sliders + ESP + Toggle + Universal NPC Support
---// Works on players AND any rig (Humanoid, Torso-only, custom NPCs)
+--// Strict targeting — only locks onto real character rigs
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -45,7 +45,6 @@ local function CheckContainer(container)
         if v:IsA("StringValue") or v:IsA("ValueBase") then
             local role = ScanValueForRole(v.Value)
             if role then return role end
-            -- Also check the name
             role = ScanValueForRole(v.Name)
             if role then return role end
         end
@@ -55,15 +54,12 @@ end
 
 local function DetectRole(plr)
     if not plr then return nil end
-    -- Character
     if plr.Character then
         local r = CheckContainer(plr.Character)
         if r then return r end
     end
-    -- Player object
     local r = CheckContainer(plr)
     if r then return r end
-    -- leaderstats
     local ls = plr:FindFirstChild("leaderstats")
     if ls then
         local r2 = CheckContainer(ls)
@@ -89,29 +85,33 @@ local function GetRigRoot(model)
         or model:FindFirstChildWhichIsA("BasePart", true)
 end
 
-local function IsValidRig(model)
-    if not model or not model:IsA("Model") then return false end
-    if model == LocalPlayer.Character then return false end
-    if not model.Parent then return false end
-
+local function HasHumanoid(model)
     local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then return false end
-
-    if not GetRigRoot(model) then return false end
+    if not hum then return false end
+    if hum.Health <= 0 then return false end
     return true
 end
 
--- Get role for any rig (player or NPC)
+local function IsNestedModel(model)
+    -- Is this model inside another model that has a Humanoid?
+    local parent = model.Parent
+    while parent and parent ~= workspace do
+        if parent:IsA("Model") and parent:FindFirstChildOfClass("Humanoid") then
+            return true
+        end
+        parent = parent.Parent
+    end
+    return false
+end
+
 local function RoleOfRig(model)
     local plr = Players:GetPlayerFromCharacter(model)
     if plr then
         local r = DetectRole(plr)
         if r then return r end
     end
-    -- Check model itself
     local r2 = CheckContainer(model)
     if r2 then return r2 end
-    -- NPC default = Murderer (so Sheriff mode locks on in trainers)
     if not plr then return "Murderer" end
     return "Innocent"
 end
@@ -123,8 +123,7 @@ local function UpdateAllESP()
 
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character and not seen[obj] then
-            if (obj:FindFirstChildOfClass("Humanoid") or obj:FindFirstChild("HumanoidRootPart"))
-            and GetRigRoot(obj) then
+            if HasHumanoid(obj) and GetRigRoot(obj) and not IsNestedModel(obj) then
                 seen[obj] = true
 
                 local role = RoleOfRig(obj)
@@ -149,7 +148,6 @@ local function UpdateAllESP()
         end
     end
 
-    -- Clean up removed
     for model, hl in pairs(activeHighlights) do
         if not model.Parent or not hl.Parent then
             if hl then hl:Destroy() end
@@ -165,7 +163,7 @@ local function ClearAllESP()
     activeHighlights = {}
 end
 
---// [ TARGETING ] --
+--// [ TARGETING — STRICT (only real character rigs) ] --
 
 local function GetTarget()
     local myRole = DetectMyRole()
@@ -179,50 +177,45 @@ local function GetTarget()
 
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("Model") and not seen[obj] and obj ~= LocalPlayer.Character then
-            if IsValidRig(obj) then
-                seen[obj] = true
+            seen[obj] = true
 
-                local root = GetRigRoot(obj)
-                if root then
-                    local dist = (root.Position - cam.CFrame.Position).Magnitude
-                    if dist <= CONFIG.MaxDistance then
-                        local screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
-                        if onScreen then
-                            local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                            if screenDist <= CONFIG.FOVRadius then
-                                local role = RoleOfRig(obj)
-                                local score = -screenDist
+            if not HasHumanoid(obj) then continue end
+            if IsNestedModel(obj) then continue end
 
-                                if myRole == "Sheriff" then
-                                    if role ~= "Murderer" then
-                                        -- skip
-                                    else
-                                        score = score + 10000
-                                    end
-                                elseif myRole == "Murderer" then
-                                    if role == "Sheriff" then
-                                        score = score + 10000
-                                    else
-                                        score = score + 5000
-                                    end
-                                else
-                                    -- unknown/innocent → pure FOV targeting
-                                    score = score + 100
-                                end
+            local root = GetRigRoot(obj)
+            if not root then continue end
 
-                                -- Sheriff strict filter
-                                if myRole == "Sheriff" and role ~= "Murderer" then
-                                    -- skip non-murderers
-                                else
-                                    if score > bestScore then
-                                        bestScore = score
-                                        best = obj
-                                    end
-                                end
-                            end
-                        end
-                    end
+            local dist = (root.Position - cam.CFrame.Position).Magnitude
+            if dist > CONFIG.MaxDistance then continue end
+
+            local screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
+            if not onScreen then continue end
+
+            local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+            if screenDist > CONFIG.FOVRadius then continue end
+
+            local role = RoleOfRig(obj)
+            local score = -screenDist
+
+            if myRole == "Sheriff" then
+                if role == "Murderer" then
+                    score = score + 10000
+                else
+                    continue
                 end
+            elseif myRole == "Murderer" then
+                if role == "Sheriff" then
+                    score = score + 10000
+                else
+                    score = score + 5000
+                end
+            else
+                score = score + 100
+            end
+
+            if score > bestScore then
+                bestScore = score
+                best = obj
             end
         end
     end
@@ -238,7 +231,6 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- FOV Circle
 local FOVCircle = Instance.new("Frame")
 FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
 FOVCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
@@ -259,7 +251,6 @@ FOVStroke.Thickness = 2
 FOVStroke.Transparency = 0.3
 FOVStroke.Parent = FOVCircle
 
--- Main Panel
 local Panel = Instance.new("Frame")
 Panel.Size = UDim2.fromOffset(260, 480)
 Panel.Position = UDim2.new(0, 20, 0.25, 0)
@@ -277,7 +268,6 @@ local PanelStroke = Instance.new("UIStroke")
 PanelStroke.Color = Color3.fromRGB(42, 42, 55)
 PanelStroke.Parent = Panel
 
--- Header
 local Header = Instance.new("Frame")
 Header.Size = UDim2.new(1, 0, 0, 44)
 Header.BackgroundTransparency = 1
@@ -308,7 +298,6 @@ HeaderTitle.TextXAlignment = Enum.TextXAlignment.Left
 HeaderTitle.ZIndex = 102
 HeaderTitle.Parent = Header
 
--- Minimize Button
 local MinimizeBtn = Instance.new("TextButton")
 MinimizeBtn.Size = UDim2.fromOffset(30, 30)
 MinimizeBtn.Position = UDim2.new(1, -38, 0, 7)
@@ -325,7 +314,6 @@ local MinCorner = Instance.new("UICorner")
 MinCorner.CornerRadius = UDim.new(0, 8)
 MinCorner.Parent = MinimizeBtn
 
--- Button Helper
 local function MakeButton(y, text, defaultOn, callback)
     local Btn = Instance.new("TextButton")
     Btn.Size = UDim2.new(1, -20, 0, 44)
@@ -353,7 +341,6 @@ local function MakeButton(y, text, defaultOn, callback)
     return Btn
 end
 
--- Slider Helper
 local function MakeSlider(y, text, min, max, default, callback)
     local Holder = Instance.new("Frame")
     Holder.Size = UDim2.new(1, -20, 0, 60)
@@ -580,7 +567,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
---// [ OPEN / MINIMIZE ANIMATION (FIXED) ] --
+--// [ OPEN / MINIMIZE ANIMATION ] --
 
 local isOpen = true
 local savedX = 20
@@ -673,4 +660,4 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
-print("[MM2] Universal AimBot + FOV + ESP + NPC Support Loaded")
+print("[MM2] Strict AimBot + FOV + ESP + NPC Support Loaded")
