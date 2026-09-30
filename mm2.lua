@@ -1,5 +1,5 @@
 --// MM2 Mobile AimBot + FOV Sliders + ESP + Toggle + Universal NPC Support
---// Strict targeting — only locks onto real character rigs
+--// Strict targeting — skips own character + accessories
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -72,7 +72,7 @@ local function DetectMyRole()
     return DetectRole(LocalPlayer)
 end
 
---// [ UNIVERSAL RIG DETECTION ] --
+--// [ RIG DETECTION ] --
 
 local function GetRigRoot(model)
     if not model then return nil end
@@ -80,28 +80,39 @@ local function GetRigRoot(model)
         or model:FindFirstChild("UpperTorso")
         or model:FindFirstChild("Torso")
         or model:FindFirstChild("Head")
-        or model:FindFirstChild("Hitbox")
-        or model.PrimaryPart
-        or model:FindFirstChildWhichIsA("BasePart", true)
 end
 
-local function HasHumanoid(model)
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
-    if hum.Health <= 0 then return false end
-    return true
-end
+-- Is this part of MY character? (includes accessories)
+local function IsPartOfMyCharacter(obj)
+    local myChar = LocalPlayer.Character
+    if not myChar then return false end
+    if obj == myChar then return true end
 
-local function IsNestedModel(model)
-    -- Is this model inside another model that has a Humanoid?
-    local parent = model.Parent
-    while parent and parent ~= workspace do
-        if parent:IsA("Model") and parent:FindFirstChildOfClass("Humanoid") then
-            return true
-        end
-        parent = parent.Parent
+    -- Walk up the ancestry chain
+    local current = obj
+    while current do
+        if current == myChar then return true end
+        current = current.Parent
     end
     return false
+end
+
+-- Strict: real character rig (has Humanoid + Torso/Torso-like part)
+local function IsRealCharacter(model)
+    if not model or not model:IsA("Model") then return false end
+    if IsPartOfMyCharacter(model) then return false end
+    if not model.Parent then return false end
+
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+
+    -- Must have a torso-like part (R6: Torso, R15: UpperTorso)
+    local torso = model:FindFirstChild("Torso")
+        or model:FindFirstChild("UpperTorso")
+        or model:FindFirstChild("HumanoidRootPart")
+    if not torso then return false end
+
+    return true
 end
 
 local function RoleOfRig(model)
@@ -122,8 +133,8 @@ local function UpdateAllESP()
     local seen = {}
 
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj ~= LocalPlayer.Character and not seen[obj] then
-            if HasHumanoid(obj) and GetRigRoot(obj) and not IsNestedModel(obj) then
+        if obj:IsA("Model") and not seen[obj] then
+            if IsRealCharacter(obj) then
                 seen[obj] = true
 
                 local role = RoleOfRig(obj)
@@ -163,7 +174,7 @@ local function ClearAllESP()
     activeHighlights = {}
 end
 
---// [ TARGETING — STRICT (only real character rigs) ] --
+--// [ TARGETING — STRICT ] --
 
 local function GetTarget()
     local myRole = DetectMyRole()
@@ -176,11 +187,10 @@ local function GetTarget()
     local seen = {}
 
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and not seen[obj] and obj ~= LocalPlayer.Character then
+        if obj:IsA("Model") and not seen[obj] then
             seen[obj] = true
 
-            if not HasHumanoid(obj) then continue end
-            if IsNestedModel(obj) then continue end
+            if not IsRealCharacter(obj) then continue end
 
             local root = GetRigRoot(obj)
             if not root then continue end
