@@ -1,5 +1,5 @@
---// MM2 Mobile AimBot + FOV Sliders + ESP + Toggle
---// Sheriff -> Murderer | Murderer -> Sheriff + Innocent | Innocent -> Off
+--// MM2 Mobile AimBot + FOV Sliders + ESP + Toggle + NPC Support
+--// Works on players AND NPCs (MM2 Aim Trainer)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -46,6 +46,19 @@ local function GetRole(plr)
     return "Innocent"
 end
 
+local function GetRoleFromModel(model)
+    local plr = Players:GetPlayerFromCharacter(model)
+    if plr then
+        return GetRole(plr)
+    end
+    for _, v in ipairs(model:GetChildren()) do
+        if v:IsA("StringValue") and (v.Name:lower():find("role") or v.Name:lower():find("team")) then
+            return v.Value
+        end
+    end
+    return "Murderer" -- default for NPCs
+end
+
 --// [ ESP ] --
 
 local function UpdateESP(plr)
@@ -72,14 +85,13 @@ local function UpdateESP(plr)
     activeHighlights[plr] = hl
 end
 
---// [ TARGETING ] --
+--// [ TARGETING (Players + NPCs) ] --
 
-local function IsValidTarget(plr)
-    if plr == LocalPlayer then return false end
-    local char = plr.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local hrp = char:FindFirstChild("HumanoidRootPart")
+local function IsValidModel(model)
+    if not model or not model:IsA("Model") then return false end
+    if model == LocalPlayer.Character then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    local hrp = model:FindFirstChild("HumanoidRootPart")
     if not hum or not hrp then return false end
     if hum.Health <= 0 then return false end
     return true
@@ -93,14 +105,38 @@ local function GetTarget()
     local cam = workspace.CurrentCamera
     local center = Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)
 
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if IsValidTarget(plr) then
-            local char = plr.Character
-            local hrp = char.HumanoidRootPart
-            local role = GetRole(plr)
+    local candidates = {}
+    local seen = {}
 
+    -- Players
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            table.insert(candidates, plr.Character)
+            seen[plr.Character] = true
+        end
+    end
+
+    -- Workspace NPCs (deep scan)
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and not seen[obj] and obj ~= LocalPlayer.Character then
+            if not Players:GetPlayerFromCharacter(obj) and obj:FindFirstChildOfClass("Humanoid") then
+                table.insert(candidates, obj)
+                seen[obj] = true
+            end
+        end
+    end
+
+    for _, model in ipairs(candidates) do
+        if IsValidModel(model) then
+            local hrp = model.HumanoidRootPart
+            local role = GetRoleFromModel(model)
+
+            -- Role filter
             if myRole == "Sheriff" and role ~= "Murderer" then continue end
-            if myRole == "Murderer" and role == "Murderer" then continue end
+            if myRole == "Murderer" then
+                local isPlayer = Players:GetPlayerFromCharacter(model) ~= nil
+                if role == "Murderer" and isPlayer then continue end
+            end
 
             local dist = (hrp.Position - cam.CFrame.Position).Magnitude
             if dist > CONFIG.MaxDistance then continue end
@@ -124,7 +160,7 @@ local function GetTarget()
 
             if score > bestScore then
                 bestScore = score
-                best = plr
+                best = model
             end
         end
     end
@@ -176,7 +212,7 @@ local PanelStroke = Instance.new("UIStroke")
 PanelStroke.Color = Color3.fromRGB(42, 42, 55)
 PanelStroke.Parent = Panel
 
--- Header (drag handle)
+-- Header
 local Header = Instance.new("Frame")
 Header.Size = UDim2.new(1, 0, 0, 44)
 Header.BackgroundTransparency = 1
@@ -204,7 +240,7 @@ HeaderTitle.Font = Enum.Font.GothamBold
 HeaderTitle.TextXAlignment = Enum.TextXAlignment.Left
 HeaderTitle.Parent = Header
 
--- Minimize button (in header)
+-- Minimize Button
 local MinimizeBtn = Instance.new("TextButton")
 MinimizeBtn.Size = UDim2.fromOffset(30, 30)
 MinimizeBtn.Position = UDim2.new(1, -38, 0, 7)
@@ -383,7 +419,7 @@ FloatBtn.TextColor3 = COLORS.Accent
 FloatBtn.TextSize = 26
 FloatBtn.Font = Enum.Font.GothamBold
 FloatBtn.AutoButtonColor = false
-FloatBtn.Visible = false -- hidden while panel is open
+FloatBtn.Visible = false
 FloatBtn.Parent = ScreenGui
 
 local FloatCorner = Instance.new("UICorner")
@@ -396,7 +432,6 @@ FloatStroke.Thickness = 1.5
 FloatStroke.Transparency = 0.3
 FloatStroke.Parent = FloatBtn
 
--- Dragging float button
 local floatDragging = false
 local floatDragStart, floatStartPos
 local floatMoved = false
@@ -438,7 +473,6 @@ local dragStart, startPos
 Header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.Touch
     or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        -- Don't drag if tapping minimize button
         if input.Position.X > MinimizeBtn.AbsolutePosition.X then return end
         dragging = true
         dragStart = input.Position
@@ -464,28 +498,30 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
---// [ OPEN / MINIMIZE ANIMATION ] --
+--// [ OPEN / MINIMIZE ANIMATION (FIXED) ] --
 
 local isOpen = true
+local savedX = 20
 
 local function MinimizePanel()
     if not isOpen then return end
     isOpen = false
+    savedX = Panel.Position.X.Offset
 
-    -- Save position, then animate off-screen left
     local targetX = -Panel.AbsoluteSize.X - 20
 
     TweenService:Create(Panel, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
         Position = UDim2.new(0, targetX, Panel.Position.Y.Scale, Panel.Position.Y.Offset)
     }):Play()
 
-    task.wait(0.25)
-    Panel.Visible = false
-    FloatBtn.Visible = true
-    FloatBtn.Size = UDim2.fromOffset(30, 30)
-    TweenService:Create(FloatBtn, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-        Size = UDim2.fromOffset(54, 54)
-    }):Play()
+    task.delay(0.25, function()
+        Panel.Visible = false
+        FloatBtn.Visible = true
+        FloatBtn.Size = UDim2.fromOffset(30, 30)
+        TweenService:Create(FloatBtn, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromOffset(54, 54)
+        }):Play()
+    end)
 end
 
 local function OpenPanel()
@@ -494,12 +530,13 @@ local function OpenPanel()
     FloatBtn.Visible = false
     Panel.Visible = true
 
-    -- Start off-screen
-    local currentX = Panel.Position.X.Offset
-    Panel.Position = UDim2.new(0, -Panel.AbsoluteSize.X - 20, Panel.Position.Y.Scale, Panel.Position.Y.Offset)
+    local yScale = Panel.Position.Y.Scale
+    local yOffset = Panel.Position.Y.Offset
+
+    Panel.Position = UDim2.new(0, savedX - 300, yScale, yOffset)
 
     TweenService:Create(Panel, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0, currentX, Panel.Position.Y.Scale, Panel.Position.Y.Offset)
+        Position = UDim2.new(0, savedX, yScale, yOffset)
     }):Play()
 end
 
@@ -525,16 +562,17 @@ RunService.RenderStepped:Connect(function()
     local target = GetTarget()
 
     if target then
-        Status.Text = myRole .. " -> " .. target.Name .. " (" .. GetRole(target) .. ")"
+        local isNPC = Players:GetPlayerFromCharacter(target) == nil
+        local tag = isNPC and "[NPC]" or "[PLAYER]"
+        Status.Text = myRole .. " -> " .. target.Name .. " " .. tag
     else
         Status.Text = myRole .. " | Target: None"
     end
 
     if CONFIG.Camlock and target then
-        local char = target.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then
+        local hrp = target:FindFirstChild("HumanoidRootPart")
+        if hrp then
             local camera = workspace.CurrentCamera
-            local hrp = char.HumanoidRootPart
             local targetCFrame = CFrame.new(camera.CFrame.Position, hrp.Position + Vector3.new(0, 1, 0))
             camera.CFrame = camera.CFrame:Lerp(targetCFrame, CONFIG.AimSmoothness)
         end
@@ -557,4 +595,4 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
-print("[MM2] Mobile AimBot + FOV Sliders + ESP + Toggle Loaded")
+print("[MM2] Mobile AimBot + FOV + ESP + NPC Support Loaded")
