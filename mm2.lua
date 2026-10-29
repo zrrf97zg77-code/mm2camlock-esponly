@@ -18,14 +18,15 @@ local Settings = {
     Prediction = 0.15,
 }
 
--- Internal camera smoothing; intentionally has no GUI control.
-local HIDDEN_SMOOTHNESS = 0.75
+-- Internal smoothing: no GUI control.
+local HIDDEN_SMOOTHNESS = 0.25
 
 local Target
 local ActiveSlider
 local Dragging = false
 local DragStart
 local FrameStart
+local ReopenButton
 
 local function make(className, properties, parent)
     local object = Instance.new(className)
@@ -118,7 +119,6 @@ end
 local LockButton
 local WallButton
 local FOVButton
-local ReopenButton
 
 LockButton = createButton("Camlock: OFF", 53, function()
     Settings.Enabled = not Settings.Enabled
@@ -211,7 +211,13 @@ local function createSlider(name, y, minValue, maxValue, initial, callback)
         value = math.floor(value * 100 + 0.5) / 100
 
         fill.Size = UDim2.new(alpha, 0, 1, 0)
-        label.Text = name .. ": " .. tostring(value)
+
+        -- Always display two decimal places for the axis controls.
+        if name == "X Offset" or name == "Y Offset" then
+            label.Text = string.format("%s: %.2f", name, value)
+        else
+            label.Text = name .. ": " .. tostring(value)
+        end
 
         callback(value)
     end
@@ -225,39 +231,33 @@ local function createSlider(name, y, minValue, maxValue, initial, callback)
         end
     end)
 
-    label.Text = name .. ": " .. tostring(initial)
+    if name == "X Offset" or name == "Y Offset" then
+        label.Text = string.format("%s: %.2f", name, initial)
+    else
+        label.Text = name .. ": " .. tostring(initial)
+    end
 end
 
 createSlider("FOV Radius", 160, 40, 400, Settings.FOV, function(value)
     Settings.FOV = value
 end)
 
-createSlider("X Offset", 198, -200, 200, Settings.XOffset, function(value)
+createSlider("X Offset", 198, -10, 10, Settings.XOffset, function(value)
     Settings.XOffset = value
 end)
 
-createSlider("Y Offset", 236, -200, 200, Settings.YOffset, function(value)
+createSlider("Y Offset", 236, -10, 10, Settings.YOffset, function(value)
     Settings.YOffset = value
 end)
 
-createSlider(
-    "Prediction",
-    274,
-    0,
-    0.5,
-    Settings.Prediction,
-    function(value)
-        Settings.Prediction = value
-    end
-)
+createSlider("Prediction", 274, 0, 0.5, Settings.Prediction, function(value)
+    Settings.Prediction = value
+end)
 
 createButton("Hide Menu", 311, function()
     Panel.Visible = false
     ActiveSlider = nil
-
-    if ReopenButton then
-        ReopenButton.Visible = true
-    end
+    ReopenButton.Visible = true
 end)
 
 ReopenButton = make("TextButton", {
@@ -282,7 +282,7 @@ ReopenButton.Activated:Connect(function()
     ReopenButton.Visible = false
 end)
 
--- Draggable title bar
+-- Drag the panel by its title.
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -488,7 +488,7 @@ RunService:BindToRenderStep(
             return
         end
 
-        -- Predict the target's position using its movement velocity.
+        -- Predict target position using movement velocity.
         local predictedPosition = head.Position
         local root = character:FindFirstChild("HumanoidRootPart")
 
@@ -504,7 +504,7 @@ RunService:BindToRenderStep(
             return
         end
 
-        -- Independent horizontal and vertical offsets.
+        -- Independent X and Y screen-space offsets.
         local aimX = math.clamp(
             predictedPoint.X + Settings.XOffset,
             0,
