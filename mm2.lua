@@ -1,673 +1,289 @@
---// MM2 Mobile AimBot + FOV Sliders + ESP + Toggle + Universal NPC Support
---// Strict targeting — skips own character + accessories
 
 local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local LocalPlayer = Players.LocalPlayer
+local player = Players.LocalPlayer
+local gui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+gui.Name = "AimGUI"
+gui.ResetOnSpawn = false
 
-local CONFIG = {
-    ESP = true,
-    Camlock = false,
-    AimSmoothness = 0.25,
-    FOVRadius = 120,
-    ShowFOVCircle = true,
-    MaxDistance = 500,
+local S = {
+    Aim = false, Wall = true, ShowFOV = true,
+    FOV = 120, X = 0, Y = 0, Smooth = 0.18
 }
 
-local COLORS = {
-    Murderer = Color3.fromRGB(255, 0, 0),
-    Sheriff  = Color3.fromRGB(0, 100, 255),
-    Innocent = Color3.fromRGB(0, 255, 0),
-    Hero     = Color3.fromRGB(255, 170, 0),
-    Accent   = Color3.fromRGB(145, 92, 255),
-    Surface  = Color3.fromRGB(30, 30, 40),
-    Unknown  = Color3.fromRGB(200, 200, 200),
-}
+local purple = Color3.fromRGB(130, 100, 255)
+local panel = Instance.new("Frame", gui)
+panel.Size = UDim2.fromOffset(270, 370)
+panel.Position = UDim2.new(.5, -135, .5, -185)
+panel.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
 
-local activeHighlights = {}
+local title = Instance.new("TextLabel", panel)
+title.Size = UDim2.new(1, 0, 0, 40)
+title.Text = "AIMLOCK SETTINGS"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.BackgroundTransparency = 1
+title.TextSize = 16
 
---// [ FUZZY ROLE DETECTION ] --
+local circle = Instance.new("Frame", gui)
+circle.AnchorPoint = Vector2.new(.5, .5)
+circle.Position = UDim2.fromScale(.5, .5)
+circle.Size = UDim2.fromOffset(S.FOV * 2, S.FOV * 2)
+circle.BackgroundTransparency = 1
+local cc = Instance.new("UICorner", circle)
+cc.CornerRadius = UDim.new(1, 0)
+local stroke = Instance.new("UIStroke", circle)
+stroke.Color = purple
+stroke.Thickness = 2
 
-local function ScanValueForRole(value)
-    local val = tostring(value):lower()
-    if val:find("sheriff") then return "Sheriff" end
-    if val:find("murder") then return "Murderer" end
-    if val:find("innocent") then return "Innocent" end
-    if val:find("hero") then return "Hero" end
-    return nil
-end
+local function toggle(text, y, key)
+    local b = Instance.new("TextButton", panel)
+    b.Position = UDim2.fromOffset(10, y)
+    b.Size = UDim2.new(1, -20, 0, 32)
+    b.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.TextSize = 13
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
 
-local function CheckContainer(container)
-    if not container then return nil end
-    for _, v in ipairs(container:GetChildren()) do
-        if v:IsA("StringValue") or v:IsA("ValueBase") then
-            local role = ScanValueForRole(v.Value)
-            if role then return role end
-            role = ScanValueForRole(v.Name)
-            if role then return role end
-        end
-    end
-    return nil
-end
-
-local function DetectRole(plr)
-    if not plr then return nil end
-    if plr.Character then
-        local r = CheckContainer(plr.Character)
-        if r then return r end
-    end
-    local r = CheckContainer(plr)
-    if r then return r end
-    local ls = plr:FindFirstChild("leaderstats")
-    if ls then
-        local r2 = CheckContainer(ls)
-        if r2 then return r2 end
-    end
-    return nil
-end
-
-local function DetectMyRole()
-    return DetectRole(LocalPlayer)
-end
-
---// [ RIG DETECTION ] --
-
-local function GetRigRoot(model)
-    if not model then return nil end
-    return model:FindFirstChild("HumanoidRootPart")
-        or model:FindFirstChild("UpperTorso")
-        or model:FindFirstChild("Torso")
-        or model:FindFirstChild("Head")
-end
-
--- Is this part of MY character? (includes accessories)
-local function IsPartOfMyCharacter(obj)
-    local myChar = LocalPlayer.Character
-    if not myChar then return false end
-    if obj == myChar then return true end
-
-    -- Walk up the ancestry chain
-    local current = obj
-    while current do
-        if current == myChar then return true end
-        current = current.Parent
-    end
-    return false
-end
-
--- Strict: real character rig (has Humanoid + Torso/Torso-like part)
-local function IsRealCharacter(model)
-    if not model or not model:IsA("Model") then return false end
-    if IsPartOfMyCharacter(model) then return false end
-    if not model.Parent then return false end
-
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-
-    -- Must have a torso-like part (R6: Torso, R15: UpperTorso)
-    local torso = model:FindFirstChild("Torso")
-        or model:FindFirstChild("UpperTorso")
-        or model:FindFirstChild("HumanoidRootPart")
-    if not torso then return false end
-
-    return true
-end
-
-local function RoleOfRig(model)
-    local plr = Players:GetPlayerFromCharacter(model)
-    if plr then
-        local r = DetectRole(plr)
-        if r then return r end
-    end
-    local r2 = CheckContainer(model)
-    if r2 then return r2 end
-    if not plr then return "Murderer" end
-    return "Innocent"
-end
-
---// [ ESP ] --
-
-local function UpdateAllESP()
-    local seen = {}
-
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and not seen[obj] then
-            if IsRealCharacter(obj) then
-                seen[obj] = true
-
-                local role = RoleOfRig(obj)
-                local color = COLORS[role] or COLORS.Unknown
-
-                if not activeHighlights[obj] or not activeHighlights[obj].Parent then
-                    local hl = Instance.new("Highlight")
-                    hl.Name = "MM2_ESP"
-                    hl.Adornee = obj
-                    hl.FillColor = color
-                    hl.FillTransparency = 0.5
-                    hl.OutlineColor = color
-                    hl.OutlineTransparency = 0
-                    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                    hl.Parent = obj
-                    activeHighlights[obj] = hl
-                else
-                    activeHighlights[obj].FillColor = color
-                    activeHighlights[obj].OutlineColor = color
-                end
-            end
-        end
+    local function refresh()
+        b.Text = text .. ": " .. (S[key] and "ON" or "OFF")
     end
 
-    for model, hl in pairs(activeHighlights) do
-        if not model.Parent or not hl.Parent then
-            if hl then hl:Destroy() end
-            activeHighlights[model] = nil
-        end
-    end
-end
-
-local function ClearAllESP()
-    for _, hl in pairs(activeHighlights) do
-        if hl then hl:Destroy() end
-    end
-    activeHighlights = {}
-end
-
---// [ TARGETING — STRICT ] --
-
-local function GetTarget()
-    local myRole = DetectMyRole()
-
-    local best, bestScore = nil, -math.huge
-    local cam = workspace.CurrentCamera
-    if not cam then return nil, myRole end
-    local center = Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)
-
-    local seen = {}
-
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and not seen[obj] then
-            seen[obj] = true
-
-            if not IsRealCharacter(obj) then continue end
-
-            local root = GetRigRoot(obj)
-            if not root then continue end
-
-            local dist = (root.Position - cam.CFrame.Position).Magnitude
-            if dist > CONFIG.MaxDistance then continue end
-
-            local screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
-            if not onScreen then continue end
-
-            local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-            if screenDist > CONFIG.FOVRadius then continue end
-
-            local role = RoleOfRig(obj)
-            local score = -screenDist
-
-            if myRole == "Sheriff" then
-                if role == "Murderer" then
-                    score = score + 10000
-                else
-                    continue
-                end
-            elseif myRole == "Murderer" then
-                if role == "Sheriff" then
-                    score = score + 10000
-                else
-                    score = score + 5000
-                end
-            else
-                score = score + 100
-            end
-
-            if score > bestScore then
-                bestScore = score
-                best = obj
-            end
-        end
-    end
-
-    return best, myRole
-end
-
---// [ GUI ] --
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "MM2_Mobile"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-local FOVCircle = Instance.new("Frame")
-FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-FOVCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
-FOVCircle.Size = UDim2.fromOffset(CONFIG.FOVRadius * 2, CONFIG.FOVRadius * 2)
-FOVCircle.BackgroundTransparency = 1
-FOVCircle.BorderSizePixel = 0
-FOVCircle.Visible = CONFIG.ShowFOVCircle
-FOVCircle.ZIndex = 50
-FOVCircle.Parent = ScreenGui
-
-local FOVCorner = Instance.new("UICorner")
-FOVCorner.CornerRadius = UDim.new(1, 0)
-FOVCorner.Parent = FOVCircle
-
-local FOVStroke = Instance.new("UIStroke")
-FOVStroke.Color = COLORS.Accent
-FOVStroke.Thickness = 2
-FOVStroke.Transparency = 0.3
-FOVStroke.Parent = FOVCircle
-
-local Panel = Instance.new("Frame")
-Panel.Size = UDim2.fromOffset(260, 480)
-Panel.Position = UDim2.new(0, 20, 0.25, 0)
-Panel.BackgroundColor3 = Color3.fromRGB(15, 15, 21)
-Panel.BorderSizePixel = 0
-Panel.ClipsDescendants = true
-Panel.ZIndex = 100
-Panel.Parent = ScreenGui
-
-local PanelCorner = Instance.new("UICorner")
-PanelCorner.CornerRadius = UDim.new(0, 14)
-PanelCorner.Parent = Panel
-
-local PanelStroke = Instance.new("UIStroke")
-PanelStroke.Color = Color3.fromRGB(42, 42, 55)
-PanelStroke.Parent = Panel
-
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 44)
-Header.BackgroundTransparency = 1
-Header.ZIndex = 101
-Header.Parent = Panel
-
-local HeaderAccent = Instance.new("Frame")
-HeaderAccent.Size = UDim2.fromOffset(4, 22)
-HeaderAccent.Position = UDim2.fromOffset(10, 11)
-HeaderAccent.BackgroundColor3 = COLORS.Accent
-HeaderAccent.BorderSizePixel = 0
-HeaderAccent.ZIndex = 102
-HeaderAccent.Parent = Header
-
-local HeaderCorner = Instance.new("UICorner")
-HeaderCorner.CornerRadius = UDim.new(0, 3)
-HeaderCorner.Parent = HeaderAccent
-
-local HeaderTitle = Instance.new("TextLabel")
-HeaderTitle.Size = UDim2.new(1, -50, 1, 0)
-HeaderTitle.Position = UDim2.fromOffset(24, 0)
-HeaderTitle.BackgroundTransparency = 1
-HeaderTitle.Text = "MM2 MOBILE"
-HeaderTitle.TextColor3 = Color3.fromRGB(245, 245, 250)
-HeaderTitle.TextSize = 15
-HeaderTitle.Font = Enum.Font.GothamBold
-HeaderTitle.TextXAlignment = Enum.TextXAlignment.Left
-HeaderTitle.ZIndex = 102
-HeaderTitle.Parent = Header
-
-local MinimizeBtn = Instance.new("TextButton")
-MinimizeBtn.Size = UDim2.fromOffset(30, 30)
-MinimizeBtn.Position = UDim2.new(1, -38, 0, 7)
-MinimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-MinimizeBtn.Text = "—"
-MinimizeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-MinimizeBtn.TextSize = 16
-MinimizeBtn.Font = Enum.Font.GothamBold
-MinimizeBtn.AutoButtonColor = false
-MinimizeBtn.ZIndex = 102
-MinimizeBtn.Parent = Header
-
-local MinCorner = Instance.new("UICorner")
-MinCorner.CornerRadius = UDim.new(0, 8)
-MinCorner.Parent = MinimizeBtn
-
-local function MakeButton(y, text, defaultOn, callback)
-    local Btn = Instance.new("TextButton")
-    Btn.Size = UDim2.new(1, -20, 0, 44)
-    Btn.Position = UDim2.fromOffset(10, y)
-    Btn.BackgroundColor3 = defaultOn and COLORS.Accent or Color3.fromRGB(40, 40, 50)
-    Btn.Text = text .. ": " .. (defaultOn and "ON" or "OFF")
-    Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Btn.Font = Enum.Font.GothamBold
-    Btn.TextSize = 13
-    Btn.AutoButtonColor = false
-    Btn.ZIndex = 101
-    Btn.Parent = Panel
-
-    local C = Instance.new("UICorner")
-    C.CornerRadius = UDim.new(0, 8)
-    C.Parent = Btn
-
-    local state = defaultOn
-    Btn.MouseButton1Click:Connect(function()
-        state = not state
-        Btn.Text = text .. ": " .. (state and "ON" or "OFF")
-        Btn.BackgroundColor3 = state and COLORS.Accent or Color3.fromRGB(40, 40, 50)
-        callback(state)
-    end)
-    return Btn
-end
-
-local function MakeSlider(y, text, min, max, default, callback)
-    local Holder = Instance.new("Frame")
-    Holder.Size = UDim2.new(1, -20, 0, 60)
-    Holder.Position = UDim2.fromOffset(10, y)
-    Holder.BackgroundColor3 = Color3.fromRGB(25, 25, 33)
-    Holder.BorderSizePixel = 0
-    Holder.ZIndex = 101
-    Holder.Parent = Panel
-
-    local HC = Instance.new("UICorner")
-    HC.CornerRadius = UDim.new(0, 8)
-    HC.Parent = Holder
-
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(1, -12, 0, 22)
-    Label.Position = UDim2.fromOffset(6, 2)
-    Label.BackgroundTransparency = 1
-    Label.Text = text .. ": " .. default
-    Label.TextColor3 = Color3.fromRGB(230, 230, 240)
-    Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 12
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.ZIndex = 102
-    Label.Parent = Holder
-
-    local BarBg = Instance.new("Frame")
-    BarBg.Size = UDim2.new(1, -20, 0, 12)
-    BarBg.Position = UDim2.new(0, 10, 0, 34)
-    BarBg.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-    BarBg.BorderSizePixel = 0
-    BarBg.ZIndex = 102
-    BarBg.Parent = Holder
-
-    local BBC = Instance.new("UICorner")
-    BBC.CornerRadius = UDim.new(1, 0)
-    BBC.Parent = BarBg
-
-    local Fill = Instance.new("Frame")
-    Fill.Size = UDim2.new((default - min)/(max - min), 0, 1, 0)
-    Fill.BackgroundColor3 = COLORS.Accent
-    Fill.BorderSizePixel = 0
-    Fill.ZIndex = 103
-    Fill.Parent = BarBg
-
-    local FC = Instance.new("UICorner")
-    FC.CornerRadius = UDim.new(1, 0)
-    FC.Parent = Fill
-
-    local Knob = Instance.new("Frame")
-    Knob.AnchorPoint = Vector2.new(0.5, 0.5)
-    Knob.Size = UDim2.fromOffset(22, 22)
-    Knob.Position = UDim2.new((default - min)/(max - min), 0, 0.5, 0)
-    Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    Knob.BorderSizePixel = 0
-    Knob.ZIndex = 104
-    Knob.Parent = BarBg
-
-    local KC = Instance.new("UICorner")
-    KC.CornerRadius = UDim.new(1, 0)
-    KC.Parent = Knob
-
-    local value = default
-    local dragging = false
-
-    local function Update(input)
-        local rel = math.clamp((input.Position.X - BarBg.AbsolutePosition.X) / BarBg.AbsoluteSize.X, 0, 1)
-        value = math.floor(min + (max - min) * rel + 0.5)
-        Fill.Size = UDim2.new(rel, 0, 1, 0)
-        Knob.Position = UDim2.new(rel, 0, 0.5, 0)
-        Label.Text = text .. ": " .. value
-        callback(value)
-    end
-
-    BarBg.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            Update(input)
+    refresh()
+    b.Activated:Connect(function()
+        S[key] = not S[key]
+        refresh()
+        if key == "ShowFOV" then
+            circle.Visible = S.ShowFOV
         end
     end)
-
-    BarBg.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseMovement) then
-            Update(input)
-        end
-    end)
-
-    return Holder
 end
 
-local ESPBtn = MakeButton(50, "ESP", CONFIG.ESP, function(s)
-    CONFIG.ESP = s
-    if not s then ClearAllESP() end
-end)
+toggle("Aimlock", 45, "Aim")
+toggle("Wallcheck", 82, "Wall")
+toggle("FOV Circle", 119, "ShowFOV")
 
-local AimBtn = MakeButton(100, "AIMBOT", CONFIG.Camlock, function(s) CONFIG.Camlock = s end)
+local sliders = {}
 
-local FOVBtn = MakeButton(150, "FOV CIRCLE", CONFIG.ShowFOVCircle, function(s)
-    CONFIG.ShowFOVCircle = s
-    FOVCircle.Visible = s
-end)
+local function slider(text, y, key, min, max, step, format)
+    local t = Instance.new("TextLabel", panel)
+    t.Position = UDim2.fromOffset(12, y)
+    t.Size = UDim2.new(1, -24, 0, 20)
+    t.BackgroundTransparency = 1
+    t.TextColor3 = Color3.new(1, 1, 1)
+    t.TextSize = 12
+    t.TextXAlignment = Enum.TextXAlignment.Left
 
-MakeSlider(204, "FOV Radius", 30, 400, CONFIG.FOVRadius, function(v)
-    CONFIG.FOVRadius = v
-end)
+    local track = Instance.new("TextButton", panel)
+    track.Position = UDim2.fromOffset(12, y + 24)
+    track.Size = UDim2.new(1, -24, 0, 8)
+    track.Text = ""
+    track.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
 
-MakeSlider(270, "Aim Smoothness", 1, 100, math.floor(CONFIG.AimSmoothness * 100), function(v)
-    CONFIG.AimSmoothness = v / 100
-end)
+    local fill = Instance.new("Frame", track)
+    fill.BackgroundColor3 = purple
+    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
-MakeSlider(336, "Max Distance", 50, 1500, CONFIG.MaxDistance, function(v)
-    CONFIG.MaxDistance = v
-end)
-
-local Status = Instance.new("TextLabel")
-Status.Size = UDim2.new(1, -20, 0, 30)
-Status.Position = UDim2.fromOffset(10, 405)
-Status.BackgroundTransparency = 1
-Status.Text = "Loading..."
-Status.TextColor3 = Color3.fromRGB(150, 150, 170)
-Status.Font = Enum.Font.Gotham
-Status.TextSize = 11
-Status.TextXAlignment = Enum.TextXAlignment.Left
-Status.ZIndex = 101
-Status.Parent = Panel
-
---// [ FLOATING TOGGLE BUTTON ] --
-
-local FloatBtn = Instance.new("TextButton")
-FloatBtn.Name = "GUIToggle"
-FloatBtn.Size = UDim2.fromOffset(54, 54)
-FloatBtn.Position = UDim2.new(0, 20, 0.5, -27)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
-FloatBtn.Text = "≡"
-FloatBtn.TextColor3 = COLORS.Accent
-FloatBtn.TextSize = 26
-FloatBtn.Font = Enum.Font.GothamBold
-FloatBtn.AutoButtonColor = false
-FloatBtn.Visible = false
-FloatBtn.ZIndex = 200
-FloatBtn.Parent = ScreenGui
-
-local FloatCorner = Instance.new("UICorner")
-FloatCorner.CornerRadius = UDim.new(0, 16)
-FloatCorner.Parent = FloatBtn
-
-local FloatStroke = Instance.new("UIStroke")
-FloatStroke.Color = COLORS.Accent
-FloatStroke.Thickness = 1.5
-FloatStroke.Transparency = 0.3
-FloatStroke.Parent = FloatBtn
-
-local floatDragging = false
-local floatDragStart, floatStartPos
-local floatMoved = false
-
-FloatBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        floatDragging = true
-        floatMoved = false
-        floatDragStart = input.Position
-        floatStartPos = FloatBtn.Position
-    end
-end)
-
-FloatBtn.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        floatDragging = false
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if floatDragging and (input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseMovement) then
-        local delta = input.Position - floatDragStart
-        if delta.Magnitude > 8 then floatMoved = true end
-        FloatBtn.Position = UDim2.new(
-            floatStartPos.X.Scale, floatStartPos.X.Offset + delta.X,
-            floatStartPos.Y.Scale, floatStartPos.Y.Offset + delta.Y
+    local function update(x)
+        local a = math.clamp(
+            (x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1
         )
+        local v = min + a * (max - min)
+        v = min + math.floor((v - min) / step + .5) * step
+        S[key] = v
+        a = (v - min) / (max - min)
+        fill.Size = UDim2.new(a, 0, 1, 0)
+        t.Text = text .. ": " .. format(v)
+        if key == "FOV" then
+            circle.Size = UDim2.fromOffset(v * 2, v * 2)
+        end
     end
-end)
 
---// [ PANEL DRAGGING ] --
+    update(track.AbsolutePosition.X +
+        track.AbsoluteSize.X * ((S[key] - min) / (max - min)))
 
-local dragging = false
-local dragStart, startPos
+    track.Activated:Connect(function()
+        update(UIS:GetMouseLocation().X)
+    end)
 
-Header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        if input.Position.X > MinimizeBtn.AbsolutePosition.X then return end
-        dragging = true
-        dragStart = input.Position
-        startPos = Panel.Position
-    end
-end)
-
-Header.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseMovement) then
-        local delta = input.Position - dragStart
-        Panel.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
---// [ OPEN / MINIMIZE ANIMATION ] --
-
-local isOpen = true
-local savedX = 20
-
-local function MinimizePanel()
-    if not isOpen then return end
-    isOpen = false
-    savedX = Panel.Position.X.Offset
-
-    local targetX = -Panel.AbsoluteSize.X - 20
-
-    TweenService:Create(Panel, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
-        Position = UDim2.new(0, targetX, Panel.Position.Y.Scale, Panel.Position.Y.Offset)
-    }):Play()
-
-    task.delay(0.25, function()
-        Panel.Visible = false
-        FloatBtn.Visible = true
-        FloatBtn.Size = UDim2.fromOffset(30, 30)
-        TweenService:Create(FloatBtn, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Size = UDim2.fromOffset(54, 54)
-        }):Play()
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliders[track] = update
+            update(input.Position.X)
+        end
     end)
 end
 
-local function OpenPanel()
-    if isOpen then return end
-    isOpen = true
-    FloatBtn.Visible = false
-    Panel.Visible = true
+slider("FOV Radius", 160, "FOV", 40, 300, 5, tostring)
+slider("X Offset", 215, "X", -200, 200, 1, tostring)
+slider("Y Offset", 270, "Y", -200, 200, 1, tostring)
+slider("Smoothness", 325, "Smooth", 0, 1, .01,
+    function(v) return string.format("%.2f", v) end)
 
-    local yScale = Panel.Position.Y.Scale
-    local yOffset = Panel.Position.Y.Offset
-
-    Panel.Position = UDim2.new(0, savedX - 300, yScale, yOffset)
-
-    TweenService:Create(Panel, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0, savedX, yScale, yOffset)
-    }):Play()
-end
-
-MinimizeBtn.MouseButton1Click:Connect(MinimizePanel)
-
-FloatBtn.MouseButton1Click:Connect(function()
-    if floatMoved then return end
-    OpenPanel()
-end)
-
---// [ MAIN LOOP ] --
-
-RunService.RenderStepped:Connect(function()
-    FOVCircle.Size = UDim2.fromOffset(CONFIG.FOVRadius * 2, CONFIG.FOVRadius * 2)
-
-    if CONFIG.ESP then
-        UpdateAllESP()
-    end
-
-    local target, myRole = GetTarget()
-
-    if target then
-        local isNPC = Players:GetPlayerFromCharacter(target) == nil
-        local tag = isNPC and "[NPC]" or "[PLAYER]"
-        Status.Text = (myRole or "?") .. " -> " .. target.Name .. " " .. tag
-    else
-        Status.Text = (myRole or "?") .. " | Target: None"
-    end
-
-    if CONFIG.Camlock and target then
-        local root = GetRigRoot(target)
-        if root then
-            local camera = workspace.CurrentCamera
-            local targetCFrame = CFrame.new(camera.CFrame.Position, root.Position + Vector3.new(0, 1, 0))
-            camera.CFrame = camera.CFrame:Lerp(targetCFrame, CONFIG.AimSmoothness)
+UIS.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        for _, update in pairs(sliders) do
+            update(input.Position.X)
         end
     end
 end)
 
---// [ PLAYER HOOKS ] --
+local hide = Instance.new("TextButton", panel)
+hide.Position = UDim2.new(1, -35, 0, 5)
+hide.Size = UDim2.fromOffset(28, 28)
+hide.Text = "X"
+hide.TextColor3 = Color3.new(1, 1, 1)
+hide.BackgroundColor3 = Color3.fromRGB(80, 60, 90)
 
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(function()
-        task.wait(0.5)
-    end)
+local show = Instance.new("TextButton", gui)
+show.Position = UDim2.fromOffset(10, 100)
+show.Size = UDim2.fromOffset(90, 35)
+show.Text = "SHOW GUI"
+show.Visible = false
+
+hide.Activated:Connect(function()
+    panel.Visible = false
+    show.Visible = true
 end)
 
-Players.PlayerRemoving:Connect(function(plr)
-    if activeHighlights[plr] then
-        activeHighlights[plr]:Destroy()
-        activeHighlights[plr] = nil
+show.Activated:Connect(function()
+    panel.Visible = true
+    show.Visible = false
+end)
+
+-- TARGETING LOGIC
+
+local target = nil
+
+local function getParts(plr)
+    local char = plr.Character
+    if not char then return end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local head = char:FindFirstChild("Head")
+    local root = char:FindFirstChild("HumanoidRootPart")
+
+    if not hum or hum.Health <= 0 or not head or not root then
+        return
     end
-end)
 
-print("[MM2] Strict AimBot + FOV + ESP + NPC Support Loaded")
+    return char, hum, head, root
+end
+
+local function visible(camera, char, head)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {player.Character, gui}
+
+    local direction = head.Position - camera.CFrame.Position
+    local result = workspace:Raycast(
+        camera.CFrame.Position, direction, params
+    )
+
+    return not result or result.Instance:IsDescendantOf(char)
+end
+
+local function findTarget(camera)
+    local best, bestDistance = nil, math.huge
+    local center = camera.ViewportSize / 2
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player then
+            local char, hum, head, root = getParts(plr)
+
+            if char then
+                local sameTeam = player.Team ~= nil
+                    and plr.Team == player.Team
+
+                if not sameTeam then
+                    local distance =
+                        (root.Position - camera.CFrame.Position).Magnitude
+
+                    local point, onScreen =
+                        camera:WorldToViewportPoint(head.Position)
+
+                    local screenDistance = (
+                        Vector2.new(point.X, point.Y) - center
+                    ).Magnitude
+
+                    if onScreen and point.Z > 0
+                        and distance <= 250
+                        and screenDistance <= S.FOV
+                        and screenDistance < bestDistance then
+
+                        if not S.Wall or visible(camera, char, head) then
+                            best = plr
+                            bestDistance = screenDistance
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+RunService:BindToRenderStep(
+    "AimGUI_Update",
+    Enum.RenderPriority.Camera.Value + 1,
+    function()
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+
+        circle.Position = UDim2.fromOffset(
+            camera.ViewportSize.X / 2,
+            camera.ViewportSize.Y / 2
+        )
+
+        if not S.Aim then
+            target = nil
+            return
+        end
+
+        if not target then
+            target = findTarget(camera)
+        end
+
+        if not target then return end
+
+        local char, hum, head, root = getParts(target)
+        if not char then
+            target = nil
+            return
+        end
+
+        local point, onScreen =
+            camera:WorldToViewportPoint(head.Position)
+
+        local center = camera.ViewportSize / 2
+        local screenDistance = (
+            Vector2.new(point.X, point.Y) - center
+        ).Magnitude
+
+        if not onScreen or point.Z <= 0
+            or screenDistance > S.FOV
+            or (S.Wall and not visible(camera, char, head)) then
+            target = nil
+            return
+        end
+
+        local ray = camera:ViewportPointToRay(
+            point.X + S.X,
+            point.Y + S.Y
+        )
+
+        local desired = CFrame.lookAt(
+            camera.CFrame.Position,
+            camera.CFrame.Position + ray.Direction
+        )
+
+        if S.Smooth > 0 then
+            camera.CFrame = camera.CFrame:Lerp(desired, S.Smooth)
+        end
+    end
+)
