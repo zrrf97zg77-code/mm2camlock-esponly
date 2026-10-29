@@ -1,4 +1,4 @@
--- Player Camlock | For your own Roblox experience
+-- Player Camlock
 -- Place in StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -15,21 +15,27 @@ local Settings = {
     FOV = 150,
     XOffset = 0,
     YOffset = 0,
-    Smoothness = 0.18,
+    Prediction = 0.15,
 }
 
-local Target = nil
-local ActiveSlider = nil
-local Dragging = false
-local DragStart, FrameStart
+-- Internal camera smoothing; intentionally has no GUI control.
+local HIDDEN_SMOOTHNESS = 0.75
 
-local function make(class, props, parent)
-    local obj = Instance.new(class)
-    for k, v in pairs(props) do
-        obj[k] = v
+local Target
+local ActiveSlider
+local Dragging = false
+local DragStart
+local FrameStart
+
+local function make(className, properties, parent)
+    local object = Instance.new(className)
+
+    for key, value in pairs(properties) do
+        object[key] = value
     end
-    obj.Parent = parent
-    return obj
+
+    object.Parent = parent
+    return object
 end
 
 local Gui = make("ScreenGui", {
@@ -46,7 +52,10 @@ local Panel = make("Frame", {
     BorderSizePixel = 0,
 }, Gui)
 
-make("UICorner", {CornerRadius = UDim.new(0, 9)}, Panel)
+make("UICorner", {
+    CornerRadius = UDim.new(0, 9),
+}, Panel)
+
 make("UIStroke", {
     Color = Color3.fromRGB(55, 112, 220),
     Thickness = 1.2,
@@ -88,34 +97,54 @@ local function createButton(text, y, callback)
         AutoButtonColor = true,
     }, Panel)
 
-    make("UICorner", {CornerRadius = UDim.new(0, 5)}, button)
+    make("UICorner", {
+        CornerRadius = UDim.new(0, 5),
+    }, button)
+
     button.Activated:Connect(callback)
     return button
 end
 
 local function updateStatus()
-    Status.Text = Settings.Enabled and
-        ("Status: ON" .. (Target and (" | " .. Target.Name) or " | Searching"))
-        or "Status: OFF"
+    if not Settings.Enabled then
+        Status.Text = "Status: OFF"
+    elseif Target then
+        Status.Text = "Status: ON | " .. Target.Name
+    else
+        Status.Text = "Status: ON | Searching"
+    end
 end
 
-local LockButton = createButton("Camlock: OFF", 53, function()
+local LockButton
+local WallButton
+local FOVButton
+local ReopenButton
+
+LockButton = createButton("Camlock: OFF", 53, function()
     Settings.Enabled = not Settings.Enabled
+
     if not Settings.Enabled then
         Target = nil
     end
-    LockButton.Text = "Camlock: " .. (Settings.Enabled and "ON" or "OFF")
+
+    LockButton.Text = "Camlock: " ..
+        (Settings.Enabled and "ON" or "OFF")
+
     updateStatus()
 end)
 
-local WallButton = createButton("Wallcheck: ON", 82, function()
+WallButton = createButton("Wallcheck: ON", 82, function()
     Settings.WallCheck = not Settings.WallCheck
-    WallButton.Text = "Wallcheck: " .. (Settings.WallCheck and "ON" or "OFF")
+
+    WallButton.Text = "Wallcheck: " ..
+        (Settings.WallCheck and "ON" or "OFF")
 end)
 
-local FOVButton = createButton("FOV Circle: ON", 111, function()
+FOVButton = createButton("FOV Circle: ON", 111, function()
     Settings.ShowFOV = not Settings.ShowFOV
-    FOVButton.Text = "FOV Circle: " .. (Settings.ShowFOV and "ON" or "OFF")
+
+    FOVButton.Text = "FOV Circle: " ..
+        (Settings.ShowFOV and "ON" or "OFF")
 end)
 
 make("TextLabel", {
@@ -128,8 +157,6 @@ make("TextLabel", {
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, Panel)
-
-local Sliders = {}
 
 local function createSlider(name, y, minValue, maxValue, initial, callback)
     local holder = make("Frame", {
@@ -145,7 +172,6 @@ local function createSlider(name, y, minValue, maxValue, initial, callback)
         TextSize = 10,
         Font = Enum.Font.Gotham,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Text = name,
     }, holder)
 
     local track = make("TextButton", {
@@ -157,64 +183,81 @@ local function createSlider(name, y, minValue, maxValue, initial, callback)
         AutoButtonColor = false,
     }, holder)
 
-    make("UICorner", {CornerRadius = UDim.new(1, 0)}, track)
+    make("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+    }, track)
 
     local fill = make("Frame", {
-        Size = UDim2.new((initial - minValue) / (maxValue - minValue), 0, 1, 0),
+        Size = UDim2.new(
+            (initial - minValue) / (maxValue - minValue),
+            0, 1, 0
+        ),
         BackgroundColor3 = Color3.fromRGB(75, 137, 255),
         BorderSizePixel = 0,
     }, track)
 
-    make("UICorner", {CornerRadius = UDim.new(1, 0)}, fill)
+    make("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+    }, fill)
 
     local function setFromX(x)
         local width = math.max(track.AbsoluteSize.X, 1)
         local alpha = math.clamp(
-            (x - track.AbsolutePosition.X) / width, 0, 1
+            (x - track.AbsolutePosition.X) / width,
+            0, 1
         )
+
         local value = minValue + alpha * (maxValue - minValue)
         value = math.floor(value * 100 + 0.5) / 100
+
         fill.Size = UDim2.new(alpha, 0, 1, 0)
         label.Text = name .. ": " .. tostring(value)
+
         callback(value)
     end
 
     track.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
+
             ActiveSlider = setFromX
             setFromX(input.Position.X)
         end
     end)
 
-    table.insert(Sliders, {
-        Update = setFromX,
-        Track = track,
-    })
-
     label.Text = name .. ": " .. tostring(initial)
 end
 
-createSlider("FOV Radius", 160, 40, 400, Settings.FOV, function(v)
-    Settings.FOV = v
+createSlider("FOV Radius", 160, 40, 400, Settings.FOV, function(value)
+    Settings.FOV = value
 end)
 
-createSlider("X Offset", 198, -200, 200, Settings.XOffset, function(v)
-    Settings.XOffset = v
+createSlider("X Offset", 198, -200, 200, Settings.XOffset, function(value)
+    Settings.XOffset = value
 end)
 
-createSlider("Y Offset", 236, -200, 200, Settings.YOffset, function(v)
-    Settings.YOffset = v
+createSlider("Y Offset", 236, -200, 200, Settings.YOffset, function(value)
+    Settings.YOffset = value
 end)
 
-createSlider("Smoothing", 274, 0.03, 1, Settings.Smoothness, function(v)
-    Settings.Smoothness = v
-end)
+createSlider(
+    "Prediction",
+    274,
+    0,
+    0.5,
+    Settings.Prediction,
+    function(value)
+        Settings.Prediction = value
+    end
+)
 
-local HideButton = createButton("Hide Menu", 311, function()
+createButton("Hide Menu", 311, function()
     Panel.Visible = false
     ActiveSlider = nil
-    ReopenButton.Visible = true
+
+    if ReopenButton then
+        ReopenButton.Visible = true
+    end
 end)
 
 ReopenButton = make("TextButton", {
@@ -230,17 +273,20 @@ ReopenButton = make("TextButton", {
     Visible = false,
 }, Gui)
 
-make("UICorner", {CornerRadius = UDim.new(0, 7)}, ReopenButton)
+make("UICorner", {
+    CornerRadius = UDim.new(0, 7),
+}, ReopenButton)
 
 ReopenButton.Activated:Connect(function()
     Panel.Visible = true
     ReopenButton.Visible = false
 end)
 
--- Drag the menu using its title.
+-- Draggable title bar
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
+
         Dragging = true
         DragStart = input.Position
         FrameStart = Panel.Position
@@ -248,17 +294,18 @@ TitleBar.InputBegan:Connect(function(input)
 end)
 
 UIS.InputChanged:Connect(function(input)
-    if Dragging then
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch then
-            local delta = input.Position - DragStart
-            Panel.Position = UDim2.new(
-                FrameStart.X.Scale,
-                FrameStart.X.Offset + delta.X,
-                FrameStart.Y.Scale,
-                FrameStart.Y.Offset + delta.Y
-            )
-        end
+    if Dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - DragStart
+
+        Panel.Position = UDim2.new(
+            FrameStart.X.Scale,
+            FrameStart.X.Offset + delta.X,
+            FrameStart.Y.Scale,
+            FrameStart.Y.Offset + delta.Y
+        )
     end
 
     if ActiveSlider and (
@@ -272,6 +319,7 @@ end)
 UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
+
         Dragging = false
         ActiveSlider = nil
     end
@@ -287,7 +335,9 @@ local Circle = make("Frame", {
     BorderSizePixel = 0,
 }, Gui)
 
-make("UICorner", {CornerRadius = UDim.new(1, 0)}, Circle)
+make("UICorner", {
+    CornerRadius = UDim.new(1, 0),
+}, Circle)
 
 make("UIStroke", {
     Color = Color3.fromRGB(85, 150, 255),
@@ -297,6 +347,7 @@ make("UIStroke", {
 
 local function getCharacterParts(player)
     local character = player.Character
+
     if not character then
         return nil, nil
     end
@@ -318,21 +369,26 @@ local function canSeeTarget(camera, character, head)
 
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {LocalPlayer.Character}
+    params.FilterDescendantsInstances = {
+        LocalPlayer.Character,
+    }
     params.IgnoreWater = true
 
     local origin = camera.CFrame.Position
     local direction = head.Position - origin
     local result = workspace:Raycast(origin, direction, params)
 
-    return result == nil or result.Instance:IsDescendantOf(character)
+    return result == nil
+        or result.Instance:IsDescendantOf(character)
 end
 
-local function getScreenPoint(camera, head)
-    local point, onScreen = camera:WorldToViewportPoint(head.Position)
+local function getScreenPoint(camera, position)
+    local point, onScreen = camera:WorldToViewportPoint(position)
+
     if not onScreen or point.Z <= 0 then
         return nil
     end
+
     return Vector2.new(point.X, point.Y)
 end
 
@@ -342,16 +398,19 @@ local function targetIsValid(camera, player)
     end
 
     local character, head = getCharacterParts(player)
+
     if not character then
         return false
     end
 
-    local point = getScreenPoint(camera, head)
+    local point = getScreenPoint(camera, head.Position)
+
     if not point then
         return false
     end
 
     local center = camera.ViewportSize / 2
+
     if (point - center).Magnitude > Settings.FOV then
         return false
     end
@@ -369,12 +428,14 @@ local function findTarget(camera)
             local character, head = getCharacterParts(player)
 
             if character and head then
-                local point = getScreenPoint(camera, head)
+                local point = getScreenPoint(camera, head.Position)
 
-                if point and canSeeTarget(camera, character, head) then
+                if point then
                     local distance = (point - center).Magnitude
 
-                    if distance <= bestDistance then
+                    if distance <= bestDistance
+                        and canSeeTarget(camera, character, head) then
+
                         bestDistance = distance
                         bestPlayer = player
                     end
@@ -386,17 +447,22 @@ local function findTarget(camera)
     return bestPlayer
 end
 
--- Run after Roblox's default camera update.
+-- Camera tracking
 RunService:BindToRenderStep(
     "PlayerCamlockUpdate",
     Enum.RenderPriority.Camera.Value + 1,
     function()
         local camera = workspace.CurrentCamera
+
         if not camera then
             return
         end
 
-        Circle.Size = UDim2.fromOffset(Settings.FOV * 2, Settings.FOV * 2)
+        Circle.Size = UDim2.fromOffset(
+            Settings.FOV * 2,
+            Settings.FOV * 2
+        )
+
         Circle.Visible = Settings.ShowFOV
 
         if not Settings.Enabled then
@@ -416,26 +482,43 @@ RunService:BindToRenderStep(
         end
 
         local character, head = getCharacterParts(Target)
+
         if not character or not head then
             Target = nil
             return
         end
 
-        local point = getScreenPoint(camera, head)
-        if not point then
+        -- Predict the target's position using its movement velocity.
+        local predictedPosition = head.Position
+        local root = character:FindFirstChild("HumanoidRootPart")
+
+        if root then
+            predictedPosition +=
+                root.AssemblyLinearVelocity * Settings.Prediction
+        end
+
+        local predictedPoint = getScreenPoint(camera, predictedPosition)
+
+        if not predictedPoint then
             Target = nil
             return
         end
 
-        -- Offsets independently adjust the screen-space aim point.
+        -- Independent horizontal and vertical offsets.
         local aimX = math.clamp(
-            point.X + Settings.XOffset, 0, camera.ViewportSize.X
+            predictedPoint.X + Settings.XOffset,
+            0,
+            camera.ViewportSize.X
         )
+
         local aimY = math.clamp(
-            point.Y + Settings.YOffset, 0, camera.ViewportSize.Y
+            predictedPoint.Y + Settings.YOffset,
+            0,
+            camera.ViewportSize.Y
         )
 
         local ray = camera:ViewportPointToRay(aimX, aimY)
+
         local desired = CFrame.lookAt(
             camera.CFrame.Position,
             camera.CFrame.Position + ray.Direction
@@ -443,7 +526,7 @@ RunService:BindToRenderStep(
 
         camera.CFrame = camera.CFrame:Lerp(
             desired,
-            math.clamp(Settings.Smoothness, 0.01, 1)
+            HIDDEN_SMOOTHNESS
         )
     end
 )
